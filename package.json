@@ -5,7 +5,8 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "dev": "node --watch server.js"
+    "dev": "node --watch server.js",
+    "migration:write": "node migrations/products-migration.js"
   },
   "keywords": [
     "express",
@@ -16,7 +17,9 @@
   "license": "ISC",
   "dependencies": {
     "cors": "^2.8.5",
+    "dotenv": "^17.4.2",
     "express": "^4.19.2",
+    "mongoose": "^9.7.1",
     "multer": "^1.4.5-lts.1"
   }
 }

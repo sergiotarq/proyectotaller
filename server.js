@@ -1,12 +1,22 @@
+require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const fs = require('fs').promises;
 const path = require('path');
 const multer = require('multer');
+const mongoose = require('mongoose');
+
+// Cargar Modelos Mongoose
+const Producto = require('./models/Producto');
+const Orden = require('./models/Orden');
 
 const app = express();
 const PORT = process.env.PORT || 5500;
-const DB_FILE = path.join(__dirname, 'db.json');
+
+// Conectar a MongoDB
+mongoose.connect(process.env.MONGO_DB_URL)
+    .then(() => console.log('✅ Conectado a MongoDB'))
+    .catch(err => console.error('❌ Error al conectar a MongoDB:', err));
 
 // Middleware
 app.use(cors());
@@ -60,22 +70,9 @@ const upload = multer({
 // ==========================================
 // FUNCIONES AUXILIARES DE BASE DE DATOS
 // ==========================================
-async function readDB() {
-    try {
-        const data = await fs.readFile(DB_FILE, 'utf8');
-        return JSON.parse(data);
-    } catch (error) {
-        // Retornar estructura por defecto en caso de error
-        return { productos: [], ordenes: [] };
-    }
-}
 
-async function writeDB(data) {
-    await fs.writeFile(DB_FILE, JSON.stringify(data, null, 2), 'utf8');
-}
-
-// Genera un código de orden único alfanumérico
-function generateUniqueCode(existingOrders) {
+// Genera un código de orden único alfanumérico en MongoDB
+async function generateUniqueCode() {
     const chars = '0123456789ABCDEF';
     let code;
     let isUnique = false;
@@ -86,7 +83,10 @@ function generateUniqueCode(existingOrders) {
             codeSegment += chars[Math.floor(Math.random() * chars.length)];
         }
         code = `DRAKO-${codeSegment}`;
-        isUnique = !existingOrders.some(o => o.code === code);
+        const exists = await Orden.findOne({ code });
+        if (!exists) {
+            isUnique = true;
+        }
     }
     return code;
 }
@@ -117,8 +117,8 @@ app.post('/api/login', (req, res) => {
 // Obtener todos los productos
 app.get('/api/productos', async (req, res) => {
     try {
-        const db = await readDB();
-        res.json(db.productos);
+        const productos = await Producto.find({});
+        res.json(productos);
     } catch (err) {
         res.status(500).json({ error: 'Error al leer productos de la base de datos' });
     }
@@ -161,14 +161,11 @@ app.post('/api/productos', (req, res, next) => {
             return res.status(400).json({ errors });
         }
 
-        const db = await readDB();
-        
         // Generar ID correlativo
-        const nextId = db.productos.length > 0 
-            ? Math.max(...db.productos.map(p => p.id)) + 1 
-            : 1;
+        const maxProduct = await Producto.findOne().sort({ id: -1 });
+        const nextId = maxProduct ? maxProduct.id + 1 : 1;
 
-        const nuevoProducto = {
+        const nuevoProducto = new Producto({
             id: nextId,
             name: name.trim(),
             category: category.trim(),
@@ -176,14 +173,16 @@ app.post('/api/productos', (req, res, next) => {
             stock: parsedStock,
             specs: specs.trim(),
             imagePath: `/uploads/${path.basename(req.file.path)}`
-        };
+        });
 
-        db.productos.push(nuevoProducto);
-        await writeDB(db);
+        await nuevoProducto.save();
 
         res.status(201).json({ message: 'Producto publicado con éxito', producto: nuevoProducto });
     } catch (err) {
         console.error(err);
+        if (req.file) {
+            await fs.unlink(req.file.path).catch(() => {});
+        }
         res.status(500).json({ error: 'Error interno del servidor al publicar producto' });
     }
 });
@@ -208,10 +207,9 @@ app.put('/api/productos/:id', (req, res, next) => {
         const parsedPrice = parseFloat(price);
         const parsedStock = parseInt(stock);
 
-        const db = await readDB();
-        const index = db.productos.findIndex(p => p.id === id);
+        const prod = await Producto.findOne({ id });
 
-        if (index === -1) {
+        if (!prod) {
             if (req.file) await fs.unlink(req.file.path).catch(() => {});
             return res.status(404).json({ error: 'Producto no encontrado' });
         }
@@ -230,7 +228,6 @@ app.put('/api/productos/:id', (req, res, next) => {
         }
 
         // Editar producto existente
-        const prod = db.productos[index];
         prod.name = name.trim();
         prod.category = category.trim();
         prod.price = parsedPrice;
@@ -247,12 +244,14 @@ app.put('/api/productos/:id', (req, res, next) => {
             prod.imagePath = `/uploads/${path.basename(req.file.path)}`;
         }
 
-        db.productos[index] = prod;
-        await writeDB(db);
+        await prod.save();
 
         res.json({ message: 'Producto actualizado con éxito', producto: prod });
     } catch (err) {
         console.error(err);
+        if (req.file) {
+            await fs.unlink(req.file.path).catch(() => {});
+        }
         res.status(500).json({ error: 'Error interno del servidor al actualizar producto' });
     }
 });
@@ -264,8 +263,8 @@ app.put('/api/productos/:id', (req, res, next) => {
 // Obtener todas las órdenes
 app.get('/api/ordenes', async (req, res) => {
     try {
-        const db = await readDB();
-        res.json(db.ordenes);
+        const ordenes = await Orden.find({});
+        res.json(ordenes);
     } catch (err) {
         res.status(500).json({ error: 'Error al leer las órdenes de la base de datos' });
     }
@@ -286,24 +285,23 @@ app.post('/api/ordenes', async (req, res) => {
             return res.status(400).json({ errors });
         }
 
-        const db = await readDB();
-        const code = generateUniqueCode(db.ordenes);
+        const code = await generateUniqueCode();
 
-        const nuevaOrden = {
+        const nuevaOrden = new Orden({
             code,
             client: client.trim(),
             brandModel: brandModel.trim(),
             issues: issues.trim(),
             accessories: accessories ? accessories.trim() : "Ninguno",
             status: "recibido", // Estado inicial
-            createdAt: new Date().toISOString()
-        };
+            createdAt: new Date()
+        });
 
-        db.ordenes.push(nuevaOrden);
-        await writeDB(db);
+        await nuevaOrden.save();
 
         res.status(201).json({ message: 'Orden técnica registrada con éxito', orden: nuevaOrden });
     } catch (err) {
+        console.error(err);
         res.status(500).json({ error: 'Error interno al registrar la orden' });
     }
 });
@@ -319,18 +317,18 @@ app.put('/api/ordenes/:code', async (req, res) => {
             return res.status(400).json({ error: 'Estado inválido' });
         }
 
-        const db = await readDB();
-        const index = db.ordenes.findIndex(o => o.code === code);
+        const orden = await Orden.findOne({ code });
 
-        if (index === -1) {
+        if (!orden) {
             return res.status(404).json({ error: 'Orden no encontrada' });
         }
 
-        db.ordenes[index].status = status;
-        await writeDB(db);
+        orden.status = status;
+        await orden.save();
 
-        res.json({ message: 'Estado de orden actualizado', orden: db.ordenes[index] });
+        res.json({ message: 'Estado de orden actualizado', orden });
     } catch (err) {
+        console.error(err);
         res.status(500).json({ error: 'Error interno al actualizar la orden' });
     }
 });
