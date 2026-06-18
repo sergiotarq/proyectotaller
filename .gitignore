@@ -1,0 +1,16 @@
+# Dependencias
+node_modules/
+
+# Base de datos local
+db.json
+
+# Archivos subidos por usuarios
+public/uploads/*
+!public/uploads/.gitkeep
+
+# Archivos del sistema y editor
+.env
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
